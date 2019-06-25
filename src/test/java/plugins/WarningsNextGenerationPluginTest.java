@@ -9,9 +9,16 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.LinkedHashMap;
 import java.util.Map.Entry;
+import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
+
+import javax.mail.MessagingException;
+import javax.mail.internet.AddressException;
+import javax.mail.internet.InternetAddress;
 
 import org.junit.Test;
+import org.openqa.selenium.WebElement;
 
 import com.google.inject.Inject;
 
@@ -21,8 +28,11 @@ import org.jenkinsci.test.acceptance.junit.AbstractJUnitTest;
 import org.jenkinsci.test.acceptance.junit.WithCredentials;
 import org.jenkinsci.test.acceptance.junit.WithDocker;
 import org.jenkinsci.test.acceptance.junit.WithPlugins;
+import org.jenkinsci.test.acceptance.plugins.email_ext.EmailExtPublisher;
+import org.jenkinsci.test.acceptance.plugins.matrix_auth.MatrixAuthorizationStrategy;
 import org.jenkinsci.test.acceptance.plugins.maven.MavenInstallation;
 import org.jenkinsci.test.acceptance.plugins.maven.MavenModuleSet;
+import org.jenkinsci.test.acceptance.plugins.mock_security_realm.MockSecurityRealm;
 import org.jenkinsci.test.acceptance.plugins.ssh_slaves.SshSlaveLauncher;
 import org.jenkinsci.test.acceptance.plugins.warnings_ng.AbstractNonDetailsIssuesTableRow;
 import org.jenkinsci.test.acceptance.plugins.warnings_ng.AnalysisResult;
@@ -45,10 +55,16 @@ import org.jenkinsci.test.acceptance.po.Build;
 import org.jenkinsci.test.acceptance.po.Build.Result;
 import org.jenkinsci.test.acceptance.po.DumbSlave;
 import org.jenkinsci.test.acceptance.po.FreeStyleJob;
+import org.jenkinsci.test.acceptance.po.GlobalSecurityConfig;
+import org.jenkinsci.test.acceptance.po.JenkinsDatabaseSecurityRealm;
 import org.jenkinsci.test.acceptance.po.Job;
 import org.jenkinsci.test.acceptance.po.Slave;
 import org.jenkinsci.test.acceptance.po.WorkflowJob;
+import org.jenkinsci.test.acceptance.slave.LocalSlaveController;
+import org.jenkinsci.test.acceptance.slave.SlaveController;
+import org.jenkinsci.test.acceptance.utils.mail.MailHog;
 
+import static org.jenkinsci.test.acceptance.plugins.matrix_auth.MatrixRow.*;
 import static org.jenkinsci.test.acceptance.plugins.warnings_ng.Assertions.*;
 
 /**
@@ -106,6 +122,231 @@ public class WarningsNextGenerationPluginTest extends AbstractJUnitTest {
 
     @Inject
     private DockerContainerHolder<JavaGitContainer> dockerContainer;
+
+    /**
+     *
+     */
+    @Test
+    @WithPlugins({"mock-security-realm", "matrix-auth@2.3"})
+    public void ui_test_pipeline_reset_quality_gate() throws ExecutionException, InterruptedException {
+
+        configureSecurity();
+        jenkins.login().doLogin("admin");
+
+        final String agentLabel = "agent";
+        createLocalSlave(agentLabel);
+
+        WorkflowJob job = jenkins.jobs.create(WorkflowJob.class);
+
+        configurePipeline(job, "build_status_test/build_01");
+
+        Build build = buildJob(job);
+        build.open();
+        checkFirstBuildStatus(build);
+
+        jenkins.restart();
+
+        // check build again to see if everything was persisted
+        checkFirstBuildStatus(build);
+
+        AnalysisSummary pmd = new AnalysisSummary(build, PMD_ID);
+        resetQualityGate(pmd);
+
+        configurePipeline(job, "build_status_test/build_02");
+
+        Build build2 = buildJob(job);
+        build2.open();
+        //TODO verify second build results
+    }
+
+    /**
+     *
+     */
+    @Test
+    public void ui_test_pipeline() throws ExecutionException, InterruptedException {
+        final String agentLabel = "agent";
+        createLocalSlave(agentLabel);
+
+        WorkflowJob job = jenkins.jobs.create(WorkflowJob.class);
+
+        configurePipeline(job, "build_status_test/build_01");
+
+        Build build = buildJob(job);
+        build.open();
+        checkFirstBuildStatus(build);
+
+        jenkins.restart();
+
+        // check build again to see if everything was persisted
+        checkFirstBuildStatus(build);
+
+        configurePipeline(job, "build_status_test/build_02");
+
+        Build build2 = buildJob(job);
+        build2.open();
+        //TODO verify second build results
+    }
+
+    private void configurePipeline(final WorkflowJob job, final String ressourceFolder) {
+        String checkstyleXml = job.copyResourceStep(
+                WARNINGS_PLUGIN_PREFIX + ressourceFolder + "/checkstyle-result.xml");
+        String findbugsXml = job.copyResourceStep(
+                WARNINGS_PLUGIN_PREFIX + ressourceFolder + "/findbugsXml.xml");
+        String pmdXml = job.copyResourceStep(WARNINGS_PLUGIN_PREFIX + ressourceFolder + "/pmd.xml");
+        job.script.set("node('agent') {\n"
+                + checkstyleXml.replace("\\", "\\\\")
+                + findbugsXml.replace("\\", "\\\\")
+                + pmdXml.replace("\\", "\\\\")
+                + "recordIssues tools: [ checkStyle(pattern: '**/checkstyle*'), "
+                + "     pmdParser(pattern: '**/pmd*'), findBugs(pattern: '**/findbugs*')],"
+                + "     qualityGates: [[threshold: 2, type: 'TOTAL', unstable: false]]\n"
+                + "}");
+        job.sandbox.check();
+        job.save();
+    }
+
+    /**
+     *
+     */
+    @Test
+    public void ui_test_freestyle_reset_quality_gate() throws ExecutionException, InterruptedException {
+        final String agentLabel = "agent";
+        createLocalSlave(agentLabel);
+
+        FreeStyleJob job = createFreeStyleJob("build_status_test/build_01");
+        IssuesRecorder recorder = addRecorderWith3Tools(job);
+        recorder.addQualityGateConfiguration(2, QualityGateType.TOTAL, false);
+        job.setLabelExpression(agentLabel);
+        job.save();
+
+        Build build = buildJob(job);
+        build.open();
+        checkFirstBuildStatus(build);
+
+        jenkins.restart();
+
+        // check build again to see if everything was persisted
+        checkFirstBuildStatus(build);
+
+        AnalysisSummary pmd = new AnalysisSummary(build, PMD_ID);
+        resetQualityGate(pmd);
+
+        reconfigureJobWithResource(job, "build_status_test/build_02");
+
+        Build build2 = buildJob(job);
+        build2.open();
+        //TODO verify second build results
+    }
+
+    /**
+     *
+     */
+    @Test
+    public void ui_test_freestyle() throws ExecutionException, InterruptedException, MessagingException, IOException {
+        final String agentLabel = "agent";
+        createLocalSlave(agentLabel);
+
+        MailHog mailHog = new MailHog();
+        mailHog.setup(jenkins);
+
+        FreeStyleJob job = createFreeStyleJob("build_status_test/build_01");
+        IssuesRecorder recorder = addRecorderWith3Tools(job);
+        recorder.addQualityGateConfiguration(2, QualityGateType.TOTAL, false);
+        job.addPublisher(EmailExtPublisher.class, emailExtPublisher -> {
+            emailExtPublisher.subject.set("Hello world");
+            emailExtPublisher.setRecipient("dev@example.com");
+        });
+        job.setLabelExpression(agentLabel);
+        job.save();
+
+        Build build = buildJob(job);
+        build.open();
+        checkFirstBuildStatus(build);
+
+        assertThat(mailHog.getMail(Pattern.compile("Hello world")).getAllRecipients()).contains(
+                new InternetAddress("dev@example.com"));
+
+        jenkins.restart();
+
+        // check build again to see if everything was persisted
+        checkFirstBuildStatus(build);
+
+        reconfigureJobWithResource(job, "build_status_test/build_02");
+
+        Build build2 = buildJob(job);
+        build2.open();
+        //TODO verify second build results
+
+        //TODO send mail at end of build 2
+    }
+
+    private void checkFirstBuildStatus(final Build build) {
+        AnalysisSummary checkstyle = new AnalysisSummary(build, CHECKSTYLE_ID);
+        assertThat(checkstyle).isDisplayed();
+        assertThat(checkstyle).hasTitleText("CheckStyle: One warning");
+        assertThat(checkstyle).hasNewSize(0); //FIXME why??
+        assertThat(checkstyle).hasFixedSize(0);
+        assertThat(checkstyle).hasInfoType(InfoType.ERROR);
+
+        AnalysisResult checkstyleDetails = checkstyle.openOverallResult();
+        assertThat(checkstyleDetails).hasActiveTab(Tab.CATEGORIES);
+        assertThat(checkstyleDetails).hasTotal(1);
+        assertThat(checkstyleDetails).hasOnlyAvailableTabs(Tab.CATEGORIES, Tab.TYPES, Tab.ISSUES);
+
+        build.open();
+        AnalysisSummary pmd = new AnalysisSummary(build, PMD_ID);
+        assertThat(pmd).isDisplayed();
+        assertThat(pmd).hasTitleText("PMD: 3 warnings");
+        assertThat(pmd).hasNewSize(3);
+        assertThat(pmd).hasFixedSize(0);
+        assertThat(pmd).hasInfoType(InfoType.ERROR);
+
+        AnalysisResult pmdDetails = pmd.openOverallResult();
+        assertThat(pmdDetails).hasActiveTab(Tab.CATEGORIES);
+        assertThat(pmdDetails).hasTotal(3);
+        assertThat(pmdDetails).hasOnlyAvailableTabs(Tab.CATEGORIES, Tab.TYPES, Tab.ISSUES);
+
+        build.open();
+        AnalysisSummary findBugs = new AnalysisSummary(build, FINDBUGS_ID);
+        assertThat(findBugs).isDisplayed();
+        assertThat(findBugs).hasTitleText("FindBugs: No warnings");
+        assertThat(findBugs).hasNewSize(0);
+        assertThat(findBugs).hasFixedSize(0);
+        assertThat(findBugs).hasInfoType(InfoType.INFO);
+    }
+
+    private void resetQualityGate(final AnalysisSummary analysisSummary) {
+        jenkins.logout();
+        jenkins.login().doLogin("user");
+        analysisSummary.o
+        WebElement resetQualityGateButton = analysisSummary.getResetQualityGate();
+        assertThat(resetQualityGateButton).isNotNull();
+        resetQualityGateButton.click();
+        assertThat(resetQualityGateButton).isNull();
+    }
+
+    private void createLocalSlave(final String label) throws ExecutionException, InterruptedException {
+        SlaveController controller = new LocalSlaveController();
+        Slave agent = controller.install(jenkins).get();
+        agent.configure();
+        agent.setLabels(label);
+        agent.save();
+        agent.waitUntilOnline();
+
+        assertThat(agent.isOnline()).isTrue();
+    }
+
+    private void configureSecurity() {
+        GlobalSecurityConfig security = new GlobalSecurityConfig(jenkins);
+        security.configure(() -> {
+            MockSecurityRealm realm = security.useRealm(MockSecurityRealm.class);
+            realm.configure("admin", "user");
+            MatrixAuthorizationStrategy mas = security.useAuthorizationStrategy(MatrixAuthorizationStrategy.class);
+            mas.addUser("admin").admin();
+            mas.addUser("user").readOnly();
+            mas.getUser("anonymous").readOnly();
+        });
+    }
 
     /**
      * Runs a pipeline with checkstyle and pmd. Verifies the expansion of tokens with the token-macro plugin.
@@ -459,8 +700,7 @@ public class WarningsNextGenerationPluginTest extends AbstractJUnitTest {
     }
 
     /**
-     * Runs a freestyle job that publishes checkstyle warnings. Verifies the content of the info and error
-     * log view.
+     * Runs a freestyle job that publishes checkstyle warnings. Verifies the content of the info and error log view.
      */
     @Test
     public void should_show_info_and_error_messages_in_freestyle_job() {
@@ -476,8 +716,7 @@ public class WarningsNextGenerationPluginTest extends AbstractJUnitTest {
     }
 
     /**
-     * Runs a pipeline that publishes checkstyle warnings. Verifies the content of the info and error
-     * log view.
+     * Runs a pipeline that publishes checkstyle warnings. Verifies the content of the info and error log view.
      */
     @Test
     @WithPlugins({"workflow-cps", "pipeline-stage-step", "workflow-durable-task-step", "workflow-basic-steps"})
@@ -522,7 +761,8 @@ public class WarningsNextGenerationPluginTest extends AbstractJUnitTest {
     /**
      * Creates and builds a maven job and verifies that all warnings are shown in the summary and details views.
      */
-    @Test @WithPlugins("maven-plugin")
+    @Test
+    @WithPlugins("maven-plugin")
     public void should_show_maven_warnings_in_maven_project() {
         MavenModuleSet job = createMavenProject();
         copyResourceFilesToWorkspace(job, SOURCE_VIEW_FOLDER + "pom.xml");
@@ -562,7 +802,8 @@ public class WarningsNextGenerationPluginTest extends AbstractJUnitTest {
     /**
      * Verifies that package and namespace names are resolved.
      */
-    @Test @WithPlugins("maven-plugin")
+    @Test
+    @WithPlugins("maven-plugin")
     public void should_resolve_packages_and_namespaces() {
         MavenModuleSet job = createMavenProject();
         job.copyDir(job.resource(SOURCE_VIEW_FOLDER));
@@ -612,7 +853,9 @@ public class WarningsNextGenerationPluginTest extends AbstractJUnitTest {
     /**
      * Verifies that warnings can be parsed on a agent as well.
      */
-    @Test @WithDocker @WithPlugins("ssh-slaves")
+    @Test
+    @WithDocker
+    @WithPlugins("ssh-slaves")
     @WithCredentials(credentialType = WithCredentials.SSH_USERNAME_PRIVATE_KEY, values = {CREDENTIALS_ID, CREDENTIALS_KEY})
     public void should_parse_warnings_on_agent() {
         DumbSlave dockerAgent = createDockerAgent();

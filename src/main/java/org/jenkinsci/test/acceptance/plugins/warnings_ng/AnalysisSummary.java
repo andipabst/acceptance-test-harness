@@ -228,6 +228,28 @@ public class AnalysisSummary extends PageObject {
     }
 
     /**
+     * Returns the {@link WebElement} for resetting the quality gate.
+     *
+     * @return The {@link WebElement} clickable for resetting the quality gate or null if no quality gate was defined or
+     *         there is no such link
+     */
+    public WebElement getResetQualityGate() {
+        for (WebElement result : results) {
+            if (result.getText().contains("Quality gate")) {
+                List<WebElement> links = result.findElements(by.tagName("a"));
+                if (!links.isEmpty()) {
+                    for (WebElement link : links) {
+                        if (link.getAttribute("href").endsWith("resetReference")) {
+                            return link;
+                        }
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
      * Returns a clickable WebElement (a-tag), by a part of the elements text.
      *
      * @param namePart
