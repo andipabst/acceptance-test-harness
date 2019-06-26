@@ -16,5 +16,25 @@
                priority="3">
       Avoid assignments in operands
     </violation>
+    <violation beginline="42" endline="42" begincolumn="20" endcolumn="49" rule="UseProperClassLoader"
+               ruleset="Error Prone" package="edu.hm.hafner.analysis.parser" class="AjcParser" method="parse"
+               externalInfoUrl="https://pmd.github.io/pmd-6.1.0/pmd_rules_java_errorprone.html#useproperclassloader"
+               priority="3">
+      In J2EE, getClassLoader() might not work as expected. Use Thread.currentThread().getContextClassLoader() instead.
+    </violation>
+  </file>
+  <file name="/Users/hafner/Development/jenkins/workspace/Model - Freestyle/src/main/java/edu/hm/hafner/analysis/parser/FindBugsParser.java">
+    <violation beginline="238" endline="238" begincolumn="78" endcolumn="92" rule="UseProperClassLoader"
+               ruleset="Error Prone" package="edu.hm.hafner.analysis.parser" class="FindBugsParser" method="readXml"
+               externalInfoUrl="https://pmd.github.io/pmd-6.1.0/pmd_rules_java_errorprone.html#useproperclassloader"
+               priority="3">
+      In J2EE, getClassLoader() might not work as expected. Use Thread.currentThread().getContextClassLoader() instead.
+    </violation>
+    <violation beginline="41" endline="41" begincolumn="78" endcolumn="92" rule="AssignmentInOperand"
+               ruleset="Error Prone" package="edu.hm.hafner.analysis.parser" class="FindBugsParser" method="readXml"
+               externalInfoUrl="https://pmd.github.io/pmd-6.1.0/pmd_rules_java_errorprone.html#assignmentinoperand"
+               priority="3">
+      Avoid assignments in operands
+    </violation>
   </file>
 </pmd>
