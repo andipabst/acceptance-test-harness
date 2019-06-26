@@ -12,9 +12,7 @@ import java.util.Map.Entry;
 import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
-
 import javax.mail.MessagingException;
-import javax.mail.internet.AddressException;
 import javax.mail.internet.InternetAddress;
 
 import org.junit.Test;
@@ -56,15 +54,14 @@ import org.jenkinsci.test.acceptance.po.Build.Result;
 import org.jenkinsci.test.acceptance.po.DumbSlave;
 import org.jenkinsci.test.acceptance.po.FreeStyleJob;
 import org.jenkinsci.test.acceptance.po.GlobalSecurityConfig;
-import org.jenkinsci.test.acceptance.po.JenkinsDatabaseSecurityRealm;
 import org.jenkinsci.test.acceptance.po.Job;
 import org.jenkinsci.test.acceptance.po.Slave;
 import org.jenkinsci.test.acceptance.po.WorkflowJob;
 import org.jenkinsci.test.acceptance.slave.LocalSlaveController;
 import org.jenkinsci.test.acceptance.slave.SlaveController;
 import org.jenkinsci.test.acceptance.utils.mail.MailHog;
+import org.jenkinsci.test.acceptance.utils.mail.MailService;
 
-import static org.jenkinsci.test.acceptance.plugins.matrix_auth.MatrixRow.*;
 import static org.jenkinsci.test.acceptance.plugins.warnings_ng.Assertions.*;
 
 /**
@@ -129,34 +126,34 @@ public class WarningsNextGenerationPluginTest extends AbstractJUnitTest {
     @Test
     @WithPlugins({"mock-security-realm", "matrix-auth@2.3"})
     public void ui_test_pipeline_reset_quality_gate() throws ExecutionException, InterruptedException {
-
         configureSecurity();
         jenkins.login().doLogin("admin");
+
+        MailHog mailHog = new MailHog();
+        mailHog.setup(jenkins);
 
         final String agentLabel = "agent";
         createLocalSlave(agentLabel);
 
         WorkflowJob job = jenkins.jobs.create(WorkflowJob.class);
 
-        configurePipeline(job, "build_status_test/build_01");
+        configurePipelineQualityGateTest(job, "build_01", false);
 
         Build build = buildJob(job);
-        build.open();
         checkFirstBuildStatus(build);
 
         jenkins.restart();
 
-        // check build again to see if everything was persisted
+        // check build status again to see if everything was persisted
         checkFirstBuildStatus(build);
 
-        AnalysisSummary pmd = new AnalysisSummary(build, PMD_ID);
-        resetQualityGate(pmd);
+        resetQualityGate(build);
 
-        configurePipeline(job, "build_status_test/build_02");
+        configurePipelineQualityGateTest(job, "build_02", true);
 
         Build build2 = buildJob(job);
-        build2.open();
-        //TODO verify second build results
+        checkSecondBuildStatus(build2);
+        //TODO mail an developers
     }
 
     /**
@@ -169,37 +166,41 @@ public class WarningsNextGenerationPluginTest extends AbstractJUnitTest {
 
         WorkflowJob job = jenkins.jobs.create(WorkflowJob.class);
 
-        configurePipeline(job, "build_status_test/build_01");
+        configurePipelineQualityGateTest(job, "build_01", false);
 
         Build build = buildJob(job);
-        build.open();
         checkFirstBuildStatus(build);
 
         jenkins.restart();
 
-        // check build again to see if everything was persisted
+        // check build status again to see if everything was persisted
         checkFirstBuildStatus(build);
 
-        configurePipeline(job, "build_status_test/build_02");
+        MailHog mailHog = new MailHog();
+        mailHog.setup(jenkins);
+
+        configurePipelineQualityGateTest(job, "build_02", true);
 
         Build build2 = buildJob(job);
-        build2.open();
-        //TODO verify second build results
+        checkSecondBuildStatus(build2);
+        //TODO assert mail to developers
     }
 
-    private void configurePipeline(final WorkflowJob job, final String ressourceFolder) {
-        String checkstyleXml = job.copyResourceStep(
-                WARNINGS_PLUGIN_PREFIX + ressourceFolder + "/checkstyle-result.xml");
-        String findbugsXml = job.copyResourceStep(
-                WARNINGS_PLUGIN_PREFIX + ressourceFolder + "/findbugsXml.xml");
-        String pmdXml = job.copyResourceStep(WARNINGS_PLUGIN_PREFIX + ressourceFolder + "/pmd.xml");
+    private void configurePipelineQualityGateTest(final WorkflowJob job, final String build, final boolean withMail) {
+        String pmd = job.copyResourceStep(
+                WARNINGS_PLUGIN_PREFIX + "quality_gate_test/" + build + "/testresult.xml");
+
+        final String mail = withMail ? "emailext body: '''build: #${BUILD_NUMBER}\n"
+                + "had ${ANALYSIS_ISSUES_COUNT} issues''', recipientProviders: [developers()]"
+                + ", subject: '${JOB_NAME}: #${BUILD_NUMBER} - ${ANALYSIS_ISSUES_COUNT} issues', to: 'foo@bar'"
+                + "\n"
+                : "";
+
         job.script.set("node('agent') {\n"
-                + checkstyleXml.replace("\\", "\\\\")
-                + findbugsXml.replace("\\", "\\\\")
-                + pmdXml.replace("\\", "\\\\")
-                + "recordIssues tools: [ checkStyle(pattern: '**/checkstyle*'), "
-                + "     pmdParser(pattern: '**/pmd*'), findBugs(pattern: '**/findbugs*')],"
-                + "     qualityGates: [[threshold: 2, type: 'TOTAL', unstable: false]]\n"
+                + pmd.replace("\\", "\\\\")
+                + "recordIssues enabledForFailure: true, tools: [ pmdParser(pattern: '**/testresult.xml') ],"
+                + " qualityGates: [[threshold: 1, type: 'TOTAL', unstable: false]]\n"
+                + mail
                 + "}");
         job.sandbox.check();
         job.save();
@@ -213,14 +214,13 @@ public class WarningsNextGenerationPluginTest extends AbstractJUnitTest {
         final String agentLabel = "agent";
         createLocalSlave(agentLabel);
 
-        FreeStyleJob job = createFreeStyleJob("build_status_test/build_01");
+        FreeStyleJob job = createFreeStyleJob("quality_gate_test/build_01");
         IssuesRecorder recorder = addRecorderWith3Tools(job);
         recorder.addQualityGateConfiguration(2, QualityGateType.TOTAL, false);
         job.setLabelExpression(agentLabel);
         job.save();
 
         Build build = buildJob(job);
-        build.open();
         checkFirstBuildStatus(build);
 
         jenkins.restart();
@@ -228,14 +228,12 @@ public class WarningsNextGenerationPluginTest extends AbstractJUnitTest {
         // check build again to see if everything was persisted
         checkFirstBuildStatus(build);
 
-        AnalysisSummary pmd = new AnalysisSummary(build, PMD_ID);
-        resetQualityGate(pmd);
+        resetQualityGate(build);
 
         reconfigureJobWithResource(job, "build_status_test/build_02");
 
         Build build2 = buildJob(job);
-        build2.open();
-        //TODO verify second build results
+        checkSecondBuildStatus(build2);
     }
 
     /**
@@ -260,7 +258,6 @@ public class WarningsNextGenerationPluginTest extends AbstractJUnitTest {
         job.save();
 
         Build build = buildJob(job);
-        build.open();
         checkFirstBuildStatus(build);
 
         assertThat(mailHog.getMail(Pattern.compile("Hello world")).getAllRecipients()).contains(
@@ -274,29 +271,35 @@ public class WarningsNextGenerationPluginTest extends AbstractJUnitTest {
         reconfigureJobWithResource(job, "build_status_test/build_02");
 
         Build build2 = buildJob(job);
-        build2.open();
-        //TODO verify second build results
+        checkSecondBuildStatus(build2);
 
         //TODO send mail at end of build 2
     }
 
     private void checkFirstBuildStatus(final Build build) {
-        AnalysisSummary checkstyle = new AnalysisSummary(build, CHECKSTYLE_ID);
-        assertThat(checkstyle).isDisplayed();
-        assertThat(checkstyle).hasTitleText("CheckStyle: One warning");
-        assertThat(checkstyle).hasNewSize(0); //FIXME why??
-        assertThat(checkstyle).hasFixedSize(0);
-        assertThat(checkstyle).hasInfoType(InfoType.ERROR);
-
-        AnalysisResult checkstyleDetails = checkstyle.openOverallResult();
-        assertThat(checkstyleDetails).hasActiveTab(Tab.CATEGORIES);
-        assertThat(checkstyleDetails).hasTotal(1);
-        assertThat(checkstyleDetails).hasOnlyAvailableTabs(Tab.CATEGORIES, Tab.TYPES, Tab.ISSUES);
-
         build.open();
         AnalysisSummary pmd = new AnalysisSummary(build, PMD_ID);
         assertThat(pmd).isDisplayed();
         assertThat(pmd).hasTitleText("PMD: 3 warnings");
+        assertThat(pmd).hasQualityGateResult(QualityGateResult.FAILED);
+        assertThat(pmd).hasNewSize(0); //FIXME why?
+        assertThat(pmd).hasFixedSize(0);
+        assertThat(pmd).hasInfoType(InfoType.ERROR);
+
+        AnalysisResult pmdDetails = pmd.openOverallResult();
+        assertThat(pmdDetails).hasActiveTab(Tab.CATEGORIES);
+        assertThat(pmdDetails).hasTotal(3);
+        assertThat(pmdDetails).hasOnlyAvailableTabs(Tab.CATEGORIES, Tab.TYPES, Tab.ISSUES);
+
+        //TODO: improve
+    }
+
+    private void checkSecondBuildStatus(final Build build) {
+        build.open();
+        AnalysisSummary pmd = new AnalysisSummary(build, PMD_ID);
+        assertThat(pmd).isDisplayed();
+        assertThat(pmd).hasTitleText("PMD: 3 warnings");
+        assertThat(pmd).hasQualityGateResult(QualityGateResult.FAILED);
         assertThat(pmd).hasNewSize(3);
         assertThat(pmd).hasFixedSize(0);
         assertThat(pmd).hasInfoType(InfoType.ERROR);
@@ -306,23 +309,27 @@ public class WarningsNextGenerationPluginTest extends AbstractJUnitTest {
         assertThat(pmdDetails).hasTotal(3);
         assertThat(pmdDetails).hasOnlyAvailableTabs(Tab.CATEGORIES, Tab.TYPES, Tab.ISSUES);
 
-        build.open();
-        AnalysisSummary findBugs = new AnalysisSummary(build, FINDBUGS_ID);
-        assertThat(findBugs).isDisplayed();
-        assertThat(findBugs).hasTitleText("FindBugs: No warnings");
-        assertThat(findBugs).hasNewSize(0);
-        assertThat(findBugs).hasFixedSize(0);
-        assertThat(findBugs).hasInfoType(InfoType.INFO);
+        //TODO: improve
     }
 
-    private void resetQualityGate(final AnalysisSummary analysisSummary) {
+    private void resetQualityGate(final Build build) {
         jenkins.logout();
         jenkins.login().doLogin("user");
-        analysisSummary.o
-        WebElement resetQualityGateButton = analysisSummary.getResetQualityGate();
+
+        build.open();
+        AnalysisSummary pmd = new AnalysisSummary(build, PMD_ID);
+        assertThat(pmd.getResetQualityGate()).isNull();
+
+        jenkins.logout();
+        jenkins.login().doLogin("admin");
+
+        build.open();
+        pmd = new AnalysisSummary(build, PMD_ID);
+        WebElement resetQualityGateButton = pmd.getResetQualityGate();
         assertThat(resetQualityGateButton).isNotNull();
         resetQualityGateButton.click();
-        assertThat(resetQualityGateButton).isNull();
+        pmd = new AnalysisSummary(build, PMD_ID);
+        assertThat(pmd.getResetQualityGate()).isNull();
     }
 
     private void createLocalSlave(final String label) throws ExecutionException, InterruptedException {
