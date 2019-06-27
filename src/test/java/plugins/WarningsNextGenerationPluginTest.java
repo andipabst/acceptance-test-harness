@@ -79,6 +79,8 @@ import static org.jenkinsci.test.acceptance.plugins.warnings_ng.Assertions.*;
  * @author Arne Schöntag
  * @author Alexandra Wenzel
  * @author Nikolai Wohlgemuth
+ * @author Fabian Janker
+ * @author Andreas Pabst
  */
 @WithPlugins("warnings-ng")
 public class WarningsNextGenerationPluginTest extends AbstractJUnitTest {
@@ -137,7 +139,7 @@ public class WarningsNextGenerationPluginTest extends AbstractJUnitTest {
      */
     @Test
     @WithPlugins({"mock-security-realm", "matrix-auth@2.3", "email-ext"})
-    public void ui_test_pipeline_reset_quality_gate()
+    public void reset_quality_gate_pipeline()
             throws ExecutionException, InterruptedException, IOException, MessagingException {
         configureSecurity();
         jenkins.login().doLogin("admin");
@@ -185,7 +187,7 @@ public class WarningsNextGenerationPluginTest extends AbstractJUnitTest {
      */
     @Test
     @WithPlugins("email-ext")
-    public void ui_test_pipeline() throws ExecutionException, InterruptedException, IOException, MessagingException {
+    public void quality_gate_pipeline() throws ExecutionException, InterruptedException, IOException, MessagingException {
         final String agentLabel = "agent";
         createLocalAgent(agentLabel);
 
@@ -226,7 +228,7 @@ public class WarningsNextGenerationPluginTest extends AbstractJUnitTest {
             job.script.set("node('agent') {\n"
                     + pmd.replace("\\", "\\\\")
                     + "recordIssues enabledForFailure: true, tools: [ pmdParser(pattern: '**/testresult.xml') ],"
-                    + " qualityGates: [[threshold: 1, type: 'TOTAL', unstable: true]]\n" //, ignoreQualityGate: true
+                    + " qualityGates: [[threshold: 1, type: 'TOTAL', unstable: true]]\n"
                     + mail
                     + "}");
             job.sandbox.check();
@@ -248,7 +250,7 @@ public class WarningsNextGenerationPluginTest extends AbstractJUnitTest {
      */
     @Test
     @WithPlugins({"mock-security-realm", "matrix-auth@2.3", "email-ext"})
-    public void ui_test_freestyle_reset_quality_gate()
+    public void reset_quality_gate_freestyle()
             throws ExecutionException, InterruptedException, IOException, MessagingException {
         configureSecurity();
         jenkins.login().doLogin("admin");
@@ -299,7 +301,7 @@ public class WarningsNextGenerationPluginTest extends AbstractJUnitTest {
      */
     @Test
     @WithPlugins("email-ext")
-    public void ui_test_freestyle() throws ExecutionException, InterruptedException, MessagingException, IOException {
+    public void quality_gate_freestyle() throws ExecutionException, InterruptedException, MessagingException, IOException {
         final String agentLabel = "agent";
         createLocalAgent(agentLabel);
 
@@ -335,7 +337,6 @@ public class WarningsNextGenerationPluginTest extends AbstractJUnitTest {
         job.addPublisher(IssuesRecorder.class, recorder -> {
             recorder.setTool("PMD", pmd -> pmd.setPattern("**/testresult.xml"));
             recorder.setEnabledForFailure(true);
-            //recorder.setIgnoreQualityGate(true);
             recorder.addQualityGateConfiguration(1, QualityGateType.TOTAL, true);
         });
         job.setLabelExpression(agentLabel);
